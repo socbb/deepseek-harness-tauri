@@ -2,7 +2,7 @@
 
 把 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）的 Web UI 装进原生窗口。
 
-**启动不等更新**：有运行时就直接进应用，界面起来之后在后台查一次 npm，发现新版本再弹窗问你要不要更新。
+**更新不打断**：有运行时就直接进应用，界面起来之后在后台查一次 npm。发现新版本只在侧栏挂个图标，你决定什么时候装。
 
 > 选型说明：Electron 打出来的包太大（300 MB 起），所以用 Tauri 2——复用系统 WebView2，exe 只有 4.4 MB、安装包 1.4 MB。
 
