@@ -11,11 +11,11 @@
 1. 定位 Node（不依赖 PATH，nvm 的软链经常是断的）
 2. 有运行时 → 直接启动 `dsh web --no-open --port 0`，解析带 token 的地址加载进 WebView2
 3. 没有运行时（首次启动）→ 先下载安装 `@deepseek-ai/dsh`，再走第 2 步
-4. 界面打开约 5 秒后 → 后台查 registry，有新版弹窗：「立即更新」→ 停服务 → 安装 → 提示重启
+4. 界面打开约 5 秒后 → 后台查 registry，有新版就在**左下角浮出一张提示卡**（立即更新 / 稍后）
 
-也可以随时用菜单 **应用 → 检查更新…** 手动查一次：有新版本会问你，已是最新会给个确认提示。
+也可以随时用菜单 **应用 → 检查更新…** 手动查一次：有新版本会弹同一张卡，已是最新给一条 4 秒后自动消失的提示。
 
-更新过程不阻塞使用：查到没有新版本就静默结束；用户点「稍后」也不影响当前会话。
+更新过程不阻塞使用：查到没有新版本就静默结束；点「稍后」也不影响当前会话。
 
 ## 菜单
 
@@ -65,7 +65,7 @@ ui/
 | 启动服务 | `node <bin> web --no-open --port 0`，`CREATE_NO_WINDOW` 避免弹黑框 |
 | 取地址 | 逐行读 stdout，抓 `http://127.0.0.1:PORT/?token=…`；**不带 token 会 401** |
 | 开窗 | 地址就绪后建隐藏窗口，1.4 秒后显示并关掉启动页（启动页置顶盖住白屏） |
-| 更新提示 | 窗口起来 5 秒后后台比对版本；也可以从菜单「检查更新…」手动触发。两种情况都走同一套逻辑：`tauri-plugin-dialog` 弹原生对话框，确认后停服务→安装→`request_restart()` |
+| 更新提示 | 窗口起来 5 秒后后台比对版本，或从菜单手动触发；发现新版在左下角显示浮层窗口（`ui/toast.html`，贴住主窗口、跟随移动缩放），点「立即更新」→ 停服务 → 安装 → 重启 |
 | 收尾 | `RunEvent::Exit` → `taskkill /pid /T /F`，连 npm 安装进程一起收 |
 
 数据目录：`%APPDATA%\com.deepseek.harness.desktop\`（`runtime\` 放运行时，`logs\desktop.log` 是日志）。
@@ -91,6 +91,8 @@ ui/
 - 启动页可脱离 Tauri 直接看：浏览器打开 `ui/splash.html`，会走一遍演示状态
 - 日志：`%APPDATA%\com.deepseek.harness.desktop\logs\desktop.log`
 - 跳过更新检查：`DSH_SKIP_UPDATE=1`
+- 想看更新提示长什么样：`DSH_FAKE_UPDATE=1`，会伪造一个 +1 的版本号（不会真的安装）
+- 浮层样式可以脱离应用调：浏览器打开 `ui/toast.html`，自带一份样例数据
 - 指定运行时/工作区：`DSH_RUNTIME_DIR`、`DSH_WORKSPACE`
 
 ## 后续可补

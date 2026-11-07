@@ -14,14 +14,21 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri::menu::{Menu, MenuItem, Submenu};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri::{
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, RunEvent, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
+};
 
 const PKG_NAME: &str = "@deepseek-ai/dsh";
 const INSTALL_TIMEOUT_SECS: u64 = 20 * 60;
 const START_TIMEOUT_SECS: u64 = 180;
 const SPLASH_SETTLE_MS: u64 = 1400;
+
+const TOAST_WIDTH: f64 = 320.0;
+const TOAST_H_ACTION: f64 = 124.0;
+const TOAST_H_INFO: f64 = 88.0;
+const TOAST_MARGIN: f64 = 14.0;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -34,6 +41,18 @@ struct AppState {
     installer_pid: Mutex<Option<u32>>,
     booting: Mutex<bool>,
     checking: AtomicBool,
+    toast: Mutex<Option<ToastPayload>>,
+    pending_update: Mutex<Option<(String, String)>>,
+}
+
+/// 左下角浮层的内容
+#[derive(Clone, Serialize, Default)]
+struct ToastPayload {
+    kind: String,
+    title: String,
+    body: String,
+    action: bool,
+    auto_hide_ms: u64,
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -71,9 +90,15 @@ impl Status {
 
 fn main() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![dsh_retry, dsh_open_log, dsh_quit])
+        .invoke_handler(tauri::generate_handler![
+            dsh_retry,
+            dsh_open_log,
+            dsh_quit,
+            dsh_toast_current,
+            dsh_dismiss,
+            dsh_update_now
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || boot(handle));
@@ -557,13 +582,21 @@ fn show_main(app: &AppHandle, url: String, log: PathBuf) -> Result<(), String> {
         .map_err(|e| format!("地址解析失败：{e}（{url}）"))?;
 
     // 在后台线程里建窗口（官方示例支持这种用法，避免 Windows 上同步命令内的死锁）
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
         .title("DeepSeek Harness")
         .inner_size(1360.0, 900.0)
         .min_inner_size(960.0, 620.0)
         .visible(false)
         .build()
         .map_err(|e| format!("创建主窗口失败：{e}"))?;
+
+    // 左下角浮层跟随主窗口移动、缩放
+    let app_for_events = app.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) => position_toast(&app_for_events),
+        WindowEvent::CloseRequested { .. } => hide_toast(&app_for_events),
+        _ => {}
+    });
 
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -639,17 +672,31 @@ fn check_update(app: AppHandle, manual: bool) {
                 if compare_versions(&installed, &latest) == Ordering::Less {
                     prompt_update(app.clone(), latest, installed);
                 } else if manual {
-                    show_message(
+                    show_toast(
                         &app,
-                        "检查更新",
-                        &format!("已是最新版本（v{installed}）。"),
+                        ToastPayload {
+                            kind: "info".to_string(),
+                            title: "已是最新版本".to_string(),
+                            body: format!("当前 v{installed}"),
+                            action: false,
+                            auto_hide_ms: 4000,
+                        },
                     );
                 }
             }
             Err(err) => {
                 log_line(&log, &format!("更新检查失败：{err}"));
                 if manual {
-                    show_message(&app, "检查更新失败", &err);
+                    show_toast(
+                        &app,
+                        ToastPayload {
+                            kind: "error".to_string(),
+                            title: "检查更新失败".to_string(),
+                            body: err,
+                            action: false,
+                            auto_hide_ms: 8000,
+                        },
+                    );
                 }
             }
         }
@@ -661,28 +708,45 @@ fn latest_and_installed(app: &AppHandle) -> Result<(String, String), String> {
     let toolchain = resolve_toolchain()?;
     let installed =
         installed_version(&dir).ok_or_else(|| "没有找到已安装的 dsh 运行时".to_string())?;
+
+    // 调试用：伪造一个更高的版本，方便查看更新提示
+    if std::env::var("DSH_FAKE_UPDATE")
+        .map(|value| value == "1")
+        .unwrap_or(false)
+    {
+        return Ok((bump_version(&installed), installed));
+    }
+
     let latest = npm_latest(&dir, &toolchain)?;
     Ok((latest, installed))
 }
 
+fn bump_version(version: &str) -> String {
+    let core = version.split('-').next().unwrap_or(version);
+    let mut parts: Vec<u32> = core.split('.').map(|part| part.parse().unwrap_or(0)).collect();
+    while parts.len() < 3 {
+        parts.push(0);
+    }
+    parts[2] += 1;
+    format!("{}.{}.{}", parts[0], parts[1], parts[2])
+}
+
 fn prompt_update(app: AppHandle, latest: String, installed: String) {
-    let app_for_update = app.clone();
-    app.dialog()
-        .message(format!(
-            "发现新版本 v{latest}（当前 v{installed}）。\n现在更新吗？更新完成后需要重启应用。"
-        ))
-        .title("DeepSeek Harness 更新")
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "立即更新".to_string(),
-            "稍后".to_string(),
-        ))
-        .show(move |confirmed| {
-            if !confirmed {
-                return;
-            }
-            let app = app_for_update.clone();
-            std::thread::spawn(move || run_update(app, latest, installed));
-        });
+    {
+        let state = app.state::<AppState>();
+        *state.pending_update.lock().unwrap() = Some((latest.clone(), installed.clone()));
+    }
+
+    show_toast(
+        &app,
+        ToastPayload {
+            kind: "update".to_string(),
+            title: format!("新版本 v{latest} 可用"),
+            body: format!("当前 v{installed}，更新后需要重启应用"),
+            action: true,
+            auto_hide_ms: 0,
+        },
+    );
 }
 
 fn run_update(app: AppHandle, latest: String, previous: String) {
@@ -692,7 +756,7 @@ fn run_update(app: AppHandle, latest: String, previous: String) {
     let toolchain = match resolve_toolchain() {
         Ok(toolchain) => toolchain,
         Err(err) => {
-            show_message(&app, "更新失败", &err);
+            toast_error(&app, "更新失败", err, 8000);
             return;
         }
     };
@@ -700,44 +764,146 @@ fn run_update(app: AppHandle, latest: String, previous: String) {
     // 先停掉 dsh，避免 npm 覆盖正在被占用的文件
     stop_runtime(&app);
     log_line(&log, &format!("开始更新 v{previous} → v{latest}"));
+    show_toast(
+        &app,
+        ToastPayload {
+            kind: "info".to_string(),
+            title: format!("正在更新到 v{latest}"),
+            body: "下载并安装中，请稍候…".to_string(),
+            action: false,
+            auto_hide_ms: 0,
+        },
+    );
 
     if let Err(err) = install(&app, &dir, &latest, Some(&previous), &log, &toolchain) {
         log_line(&log, &format!("更新失败：{err}"));
-        show_message(
-            &app,
-            "更新失败",
-            &format!("{err}\n\n可以稍后重试，或查看日志：{}", log.display()),
-        );
+        toast_error(&app, "更新失败", err, 0);
         return;
     }
 
     let now = installed_version(&dir).unwrap_or_else(|| previous.clone());
     if compare_versions(&now, &latest) != Ordering::Equal {
-        show_message(
+        toast_error(
             &app,
             "更新未完成",
-            &format!("当前仍是 v{now}，建议稍后重试或查看日志：{}", log.display()),
+            format!("当前仍是 v{now}，可查看日志：{}", log.display()),
+            0,
         );
         return;
     }
 
-    // 服务已经停了，这里直接重启，避免停在一个不可用的界面
-    let app_for_restart = app.clone();
-    app.dialog()
-        .message(format!("已更新到 v{latest}，点击「确定」后重启应用。"))
-        .title("更新完成")
-        .buttons(MessageDialogButtons::Ok)
-        .show(move |_| {
-            app_for_restart.request_restart();
-        });
+    // 服务已经停了，直接重启，避免停在一个不可用的界面
+    show_toast(
+        &app,
+        ToastPayload {
+            kind: "info".to_string(),
+            title: format!("已更新到 v{latest}"),
+            body: "正在重启应用…".to_string(),
+            action: false,
+            auto_hide_ms: 0,
+        },
+    );
+    std::thread::sleep(Duration::from_millis(1200));
+    app.request_restart();
 }
 
-fn show_message(app: &AppHandle, title: &str, message: &str) {
-    app.dialog()
-        .message(message)
-        .title(title)
-        .buttons(MessageDialogButtons::Ok)
-        .show(|_| {});
+fn toast_error(app: &AppHandle, title: &str, body: String, auto_hide_ms: u64) {
+    show_toast(
+        app,
+        ToastPayload {
+            kind: "error".to_string(),
+            title: title.to_string(),
+            body,
+            action: false,
+            auto_hide_ms,
+        },
+    );
+}
+
+// ------------------------------------------------------------ 左下角浮层
+
+fn show_toast(app: &AppHandle, payload: ToastPayload) {
+    log_line(&log_file(app), &format!("浮层：{}", payload.title));
+
+    {
+        let state = app.state::<AppState>();
+        *state.toast.lock().unwrap() = Some(payload.clone());
+    }
+
+    let height = if payload.action {
+        TOAST_H_ACTION
+    } else {
+        TOAST_H_INFO
+    };
+
+    let toast = match ensure_toast(app, height) {
+        Ok(toast) => toast,
+        Err(err) => {
+            log_line(&log_file(app), &format!("浮层创建失败：{err}"));
+            return;
+        }
+    };
+
+    position_toast(app);
+    let _ = toast.show();
+    let _ = toast.emit("dsh-toast", payload);
+
+    // 浮层只是提示，别把焦点从主窗口抢走
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.set_focus();
+    }
+}
+
+fn hide_toast(app: &AppHandle) {
+    {
+        let state = app.state::<AppState>();
+        *state.toast.lock().unwrap() = None;
+    }
+    if let Some(toast) = app.get_webview_window("toast") {
+        let _ = toast.hide();
+    }
+}
+
+fn ensure_toast(app: &AppHandle, height: f64) -> tauri::Result<WebviewWindow> {
+    if let Some(toast) = app.get_webview_window("toast") {
+        let _ = toast.set_size(LogicalSize::new(TOAST_WIDTH, height));
+        return Ok(toast);
+    }
+
+    WebviewWindowBuilder::new(app, "toast", WebviewUrl::App("toast.html".into()))
+        .title("DeepSeek Harness")
+        .inner_size(TOAST_WIDTH, height)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .visible(false)
+        .build()
+}
+
+/// 贴住主窗口左下角，跟随移动/缩放
+fn position_toast(app: &AppHandle) {
+    let (Some(main), Some(toast)) = (
+        app.get_webview_window("main"),
+        app.get_webview_window("toast"),
+    ) else {
+        return;
+    };
+
+    let (Ok(origin), Ok(size), Ok(toast_size)) =
+        (main.inner_position(), main.inner_size(), toast.outer_size())
+    else {
+        return;
+    };
+
+    let scale = main.scale_factor().unwrap_or(1.0);
+    let margin = (TOAST_MARGIN * scale) as i32;
+    let x = origin.x + margin;
+    let y = origin.y + size.height as i32 - toast_size.height as i32 - margin;
+    let _ = toast.set_position(PhysicalPosition::new(x, y));
 }
 
 // ------------------------------------------------------------------ 命令
@@ -768,6 +934,34 @@ fn dsh_open_log(app: AppHandle) {
 #[tauri::command]
 fn dsh_quit(app: AppHandle) {
     app.exit(0);
+}
+
+#[tauri::command]
+fn dsh_toast_current(app: AppHandle) -> Option<ToastPayload> {
+    let state = app.state::<AppState>();
+    let value = state.toast.lock().unwrap().clone();
+    value
+}
+
+#[tauri::command]
+fn dsh_dismiss(app: AppHandle) {
+    hide_toast(&app);
+}
+
+#[tauri::command]
+fn dsh_update_now(app: AppHandle) {
+    hide_toast(&app);
+
+    let pending = {
+        let state = app.state::<AppState>();
+        let value = state.pending_update.lock().unwrap().take();
+        value
+    };
+
+    if let Some((latest, installed)) = pending {
+        let handle = app.clone();
+        std::thread::spawn(move || run_update(handle, latest, installed));
+    }
 }
 
 // ------------------------------------------------------------------ 工具

@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "启动页需要的核心能力：事件监听、调用自定义命令",
-  "windows": ["splash", "main"],
+  "description": "启动页与左下角浮层需要的核心能力：事件监听、调用自定义命令",
+  "windows": ["splash", "main", "toast"],
   "permissions": ["core:default"]
 }
