@@ -1,0 +1,16 @@
+.gitignore
+  h_b7c601a3781e0c 4
+README.md
+  h_b7c601a3781e0c 58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9d300190516485f631c469b472c03605531702dc",
+  "prompts": {},
+  "humans": {
+    "h_b7c601a3781e0c": {
+      "author": "陈波波 <socbb@uap.local>"
+    }
+  }
+}
