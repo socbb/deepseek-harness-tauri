@@ -4,7 +4,7 @@
 
 **启动不等更新**：有运行时就直接进应用，界面起来之后在后台查一次 npm，发现新版本再弹窗问你要不要更新。
 
-> 选型说明：Electron 打出来的包太大（300 MB 起），所以用 Tauri 2——复用系统 WebView2，产物只有十几 MB。
+> 选型说明：Electron 打出来的包太大（300 MB 起），所以用 Tauri 2——复用系统 WebView2，exe 只有 4.4 MB、安装包 1.4 MB。
 
 ## 启动流程
 
@@ -25,20 +25,116 @@
 
 ## 环境要求
 
-| 依赖 | 用途 |
+| 平台 | 需要装什么 |
 | --- | --- |
-| Node.js + npm | 安装、启动 dsh |
-| Rust（stable-msvc） | 编译本应用 |
-| VS Build Tools | C++ 桌面开发工作负载 + Windows SDK（链接必需） |
-| WebView2 运行时 | Win10 1803+ 一般自带 |
+| 通用 | Node.js 18+（运行 dsh 用） |
+| Windows | Rust stable-msvc、VS Build Tools（勾「使用 C++ 的桌面开发」+ Windows SDK）、WebView2 运行时（Win10 1803+ 一般自带） |
+| macOS | Rust stable、Xcode Command Line Tools（WebKit 系统自带，不用装浏览器内核） |
+
+装完自查，三项都应显示 ✔：
 
 ```bash
-# 装完工具链后自查，三项都应是 ✔
 npx tauri info
+```
 
+## 打包
+
+> **必须在目标系统上打包。** macOS 的 `.app`/`.dmg` 只能在 macOS 上出，Windows 的安装包只能在 Windows 上出——Tauri 不做交叉编译，macOS 的签名与公证工具链也只有 macOS 上有。
+
+两个平台都是先 `npm install`，再 `npm run build`，区别在依赖和产物格式。
+
+### Windows
+
+**1. 装 VS Build Tools**（管理员命令行）
+
+```bat
+vs_buildtools.exe --quiet --wait --add Microsoft.VisualStudio.Workload.VCTools ^
+  --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended
+```
+
+**2. 打包**
+
+```bash
 npm install
-npm run dev      # 开发运行
-npm run build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
+npm run build                     # 默认出 NSIS 安装包（当前用户级安装，不需要管理员）
+npm run build -- --bundles msi    # 需要 .msi 时加这个（会自动下载 WiX）
+```
+
+产物：
+
+```
+src-tauri/target/release/deepseek-harness-desktop.exe                       # 裸 exe，可直接跑
+src-tauri/target/release/bundle/nsis/DeepSeek Harness_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/msi/DeepSeek Harness_0.1.0_x64_en-US.msi    # 选了 msi 才有
+```
+
+ARM64 机器：
+
+```bash
+rustup target add aarch64-pc-windows-msvc
+npm run build -- --target aarch64-pc-windows-msvc
+```
+
+### macOS
+
+**1. 装 Xcode 命令行工具和 Rust**
+
+```bash
+xcode-select --install
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**2. 打包**（默认只出当前架构）
+
+```bash
+npm install
+npm run build
+```
+
+产物：
+
+```
+src-tauri/target/release/bundle/macos/DeepSeek Harness.app
+src-tauri/target/release/bundle/dmg/DeepSeek Harness_0.1.0_aarch64.dmg
+```
+
+**3. 通用包**（同时支持 Intel 和 Apple Silicon）
+
+```bash
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+npm run build -- --target universal-apple-darwin
+```
+
+### 两个平台的分工
+
+| 项 | Windows | macOS |
+| --- | --- | --- |
+| 打包目标 | `nsis`（可选 `msi`） | `app` + `dmg` |
+| 配置来源 | `tauri.conf.json` 的 `bundle.targets` | `tauri.macos.conf.json` 覆盖，构建时自动合并 |
+| 渲染内核 | WebView2（系统组件） | WKWebView（系统组件） |
+| 图标 | `icon.ico` + png | `icon.icns` |
+
+### 签名与分发
+
+- **Windows**：不签名会弹 SmartScreen「未知发布者」。正式分发配 `bundle.windows.certificateThumbprint`，或用 `signCommand` 接自己的签名服务。
+- **macOS**：默认 ad-hoc 签名（`signingIdentity: "-"`），换台机器打开会被 Gatekeeper 拦。临时办法是右键 →「打开」，或执行 `xattr -dr com.apple.quarantine "/Applications/DeepSeek Harness.app"`；正式分发要 Apple Developer ID 签名 + 公证，构建时提供 `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` 三个环境变量。
+
+### 代码里的平台分支
+
+| 位置 | Windows | macOS |
+| --- | --- | --- |
+| Node 探测 | 找 `node.exe` + `npm.cmd`，扫 Program Files / nvm 目录 | 找 `node` + `npm`，扫 `/opt/homebrew/bin`、`/usr/local/bin` 等 |
+| 结束进程 | `taskkill /pid /T /F` | `kill -9` |
+| 打开日志 | `explorer` | `open` |
+
+> macOS 侧代码已按平台分支写好，但作者只在 Windows 上实测过运行与打包；第一次在 Mac 上出包前，建议先 `npm run dev` 跑一遍。
+
+## 开发
+
+```bash
+npm install
+npm run dev      # 开发运行（带热重载）
+npm run icon     # 从 app-icon.png 重新生成全套图标
 ```
 
 ## 目录结构
@@ -46,10 +142,12 @@ npm run build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
 ```
 src-tauri/
   src/main.rs              全部逻辑：版本检查 → npm 安装 → 启动服务 → 开窗
-  tauri.conf.json          启动页窗口（无边框/透明/置顶）、打包配置
+  tauri.conf.json          启动页窗口（无边框/透明/置顶）、打包配置（Windows: nsis）
+  tauri.macos.conf.json    macOS 打包覆盖（app + dmg）
   capabilities/default.json core:default（事件监听 + 自定义命令）
 ui/
   splash.html              启动页，含错误态；浏览器直接打开可走演示流程
+  toast.html               左下角浮层（更新确认 / 提示）
   index.html               frontendDist 占位首页
 ```
 
@@ -70,7 +168,7 @@ ui/
 
 ## 已经验证过的
 
-- 能编译、能跑：debug / release 均通过，产物 exe 9.6 MB，NSIS 安装包 2.08 MB
+- 能编译、能跑：debug / release 均通过，产物 exe 4.4 MB，NSIS 安装包 1.4 MB
 - **纯净 PATH 下首次启动**（模拟从资源管理器双击）：自动定位到 `C:\Program Files\nodejs`，装完 652 个包共约 80 秒，服务就绪并开窗
 - 二次启动约 12 秒；窗口起来 5 秒后后台检查更新，无新版本时静默结束
 - 角标位置实测：`badge y=820 / 更多 y=858`，同宽（264px）、间距 6px，就在「更多」正上方

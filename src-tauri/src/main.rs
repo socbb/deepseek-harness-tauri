@@ -1040,7 +1040,11 @@ fn dsh_open_log(app: AppHandle) {
     {
         let _ = Command::new("explorer").arg(&path).spawn();
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg(&path).spawn();
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         let _ = Command::new("xdg-open").arg(&path).spawn();
     }
@@ -1145,45 +1149,79 @@ impl Toolchain {
             command.arg(cli);
             return command;
         }
-        let npm_cmd = self.npm_cmd.as_ref().expect("npm_cmd 缺失");
-        let shell = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-        let mut command = Command::new(shell);
-        command.args(["/d", "/s", "/c"]).arg(npm_cmd);
-        command
+
+        let npm = self.npm_cmd.as_ref().expect("npm_cmd 缺失");
+
+        #[cfg(windows)]
+        {
+            let shell = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+            let mut command = Command::new(shell);
+            command.args(["/d", "/s", "/c"]).arg(npm);
+            command
+        }
+
+        #[cfg(not(windows))]
+        {
+            Command::new(npm)
+        }
     }
 }
+
+const NODE_BIN: &str = if cfg!(windows) { "node.exe" } else { "node" };
 
 fn node_candidate_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
-    for key in [
-        "ProgramFiles",
-        "ProgramFiles(x86)",
-        "LOCALAPPDATA",
-        "APPDATA",
-        "NVM_HOME",
-        "NVM_SYMLINK",
-    ] {
-        let Some(base) = std::env::var_os(key) else {
-            continue;
-        };
-        let base = PathBuf::from(base);
-        match key {
-            "ProgramFiles" | "ProgramFiles(x86)" => dirs.push(base.join("nodejs")),
-            "LOCALAPPDATA" => dirs.push(base.join("Programs").join("nodejs")),
-            "APPDATA" => dirs.push(base.join("nvm")),
-            _ => dirs.push(base),
+
+    #[cfg(windows)]
+    {
+        for key in [
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "NVM_HOME",
+            "NVM_SYMLINK",
+        ] {
+            let Some(base) = std::env::var_os(key) else {
+                continue;
+            };
+            let base = PathBuf::from(base);
+            match key {
+                "ProgramFiles" | "ProgramFiles(x86)" => dirs.push(base.join("nodejs")),
+                "LOCALAPPDATA" => dirs.push(base.join("Programs").join("nodejs")),
+                "APPDATA" => dirs.push(base.join("nvm")),
+                _ => dirs.push(base),
+            }
+        }
+        dirs.push(PathBuf::from(r"C:\nvm4w\nodejs"));
+    }
+
+    #[cfg(not(windows))]
+    {
+        for dir in [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/opt/local/bin",
+        ] {
+            dirs.push(PathBuf::from(dir));
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            dirs.push(home.join(".volta").join("bin"));
+            dirs.push(home.join(".local").join("bin"));
         }
     }
-    dirs.push(PathBuf::from(r"C:\nvm4w\nodejs"));
+
     dirs
 }
 
 fn resolve_toolchain() -> Result<Toolchain, String> {
     for dir in node_candidate_dirs() {
-        let node = dir.join("node.exe");
+        let node = dir.join(NODE_BIN);
         if !node.is_file() {
             continue;
         }
@@ -1193,7 +1231,13 @@ fn resolve_toolchain() -> Result<Toolchain, String> {
             .join("bin")
             .join("npm-cli.js");
         let npm_cli = if cli.is_file() { Some(cli) } else { None };
+
+        // Windows 上是 npm.cmd，macOS / Linux 上是 npm（脚本或软链）
+        #[cfg(windows)]
         let cmd_path = dir.join("npm.cmd");
+        #[cfg(not(windows))]
+        let cmd_path = dir.join("npm");
+
         let npm_cmd = if cmd_path.is_file() {
             Some(cmd_path)
         } else {
