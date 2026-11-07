@@ -1,0 +1,18 @@
+README.md
+  h_b7c601a3781e0c 14-15,17,19,21-24,66,76,78
+src-tauri/capabilities/default.json
+  h_b7c601a3781e0c 3,5-7
+src-tauri/src/main.rs
+  h_b7c601a3781e0c 32-147,318,320,668,724,729,752-756,758,760-762,772-813,842-844,846-852,910
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "80e1c7a723b667b94ba3b6a4dc12aa4aed894214",
+  "prompts": {},
+  "humans": {
+    "h_b7c601a3781e0c": {
+      "author": "陈波波 <socbb@uap.local>"
+    }
+  }
+}
