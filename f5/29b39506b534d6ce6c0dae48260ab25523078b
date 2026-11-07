@@ -1,0 +1,16 @@
+README.md
+  h_b7c601a3781e0c 16-17,20-27,68,78
+src-tauri/src/main.rs
+  h_b7c601a3781e0c 18,36,85-97,105-128,217,605-606,612-614,616-623,625-647,651-653,659-687
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f529b39506b534d6ce6c0dae48260ab25523078b",
+  "prompts": {},
+  "humans": {
+    "h_b7c601a3781e0c": {
+      "author": "陈波波 <socbb@uap.local>"
+    }
+  }
+}
