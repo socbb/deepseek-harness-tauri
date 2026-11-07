@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>DeepSeek Harness</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --ink: #171a1f;
+    --muted: #7c8496;
+    --faint: #a3aab9;
+    --line: #ebedf3;
+    --brand: #4d6bfe;
+    --brand-2: #7b61ff;
+    --danger: #d9363e;
+  }
+
+  html, body {
+    height: 100%;
+    background: transparent;
+    font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: var(--ink);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+
+  body { padding: 14px; }
+
+  .card {
+    height: 100%;
+    border-radius: 20px;
+    background: radial-gradient(120% 90% at 0% 0%, #f2f5ff 0%, #ffffff 46%), #ffffff;
+    border: 1px solid #e9ecf5;
+    box-shadow: 0 18px 48px rgba(24, 39, 75, 0.16), 0 2px 8px rgba(24, 39, 75, 0.06);
+    display: flex;
+    flex-direction: column;
+    padding: 26px 28px 20px;
+    transition: opacity 180ms ease, transform 180ms ease;
+  }
+
+  .card.out { opacity: 0; transform: scale(0.985); }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo {
+    width: 40px; height: 40px;
+    border-radius: 12px;
+    background: linear-gradient(140deg, var(--brand) 0%, var(--brand-2) 100%);
+    display: grid; place-items: center;
+    box-shadow: 0 6px 16px rgba(77, 107, 254, 0.32);
+    flex: none;
+  }
+
+  .brand-name { font-size: 15px; font-weight: 600; letter-spacing: 0.1px; line-height: 1.2; }
+  .brand-sub { margin-top: 3px; font-size: 11.5px; color: var(--faint); letter-spacing: 0.2px; }
+
+  .badge {
+    margin-left: auto;
+    font-size: 10.5px;
+    color: #5b6480;
+    background: #f0f3ff;
+    border: 1px solid #e2e8ff;
+    padding: 3px 8px;
+    border-radius: 999px;
+  }
+
+  main { flex: 1; display: flex; flex-direction: column; padding-top: 6px; }
+  .status-block { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+
+  .row { display: flex; align-items: center; gap: 12px; }
+
+  .spin {
+    width: 18px; height: 18px;
+    flex: none;
+    border-radius: 50%;
+    border: 2px solid #dfe4f5;
+    border-top-color: var(--brand);
+    animation: spin 0.75s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .status {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    line-height: 1.35;
+    word-break: break-word;
+  }
+
+  .detail {
+    margin: 7px 0 0 30px;
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.55;
+    min-height: 20px;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+
+  .bar {
+    height: 5px;
+    margin-left: 30px;
+    margin-top: 18px;
+    border-radius: 999px;
+    background: #e8ebf4;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .bar::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 38%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--brand), var(--brand-2));
+    animation: sweep 1.35s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+
+  @keyframes sweep {
+    0%   { transform: translateX(-110%); }
+    100% { transform: translateX(300%); }
+  }
+
+  .steps {
+    display: flex;
+    gap: 20px;
+    padding-left: 30px;
+    margin-top: 20px;
+    font-size: 11.5px;
+    color: var(--faint);
+  }
+
+  .step { display: flex; align-items: center; gap: 6px; }
+  .sdot { width: 6px; height: 6px; border-radius: 50%; background: #d9dee9; transition: background 160ms ease; }
+  .step.done, .step.active { color: #4a5164; }
+  .step.done .sdot { background: #b9c6ff; }
+  .step.active { font-weight: 500; }
+  .step.active .sdot {
+    background: var(--brand);
+    box-shadow: 0 0 0 0 rgba(77, 107, 254, 0.45);
+    animation: pulse 1.4s ease-out infinite;
+  }
+
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(77, 107, 254, 0.4); }
+    70%  { box-shadow: 0 0 0 6px rgba(77, 107, 254, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(77, 107, 254, 0); }
+  }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: var(--faint);
+  }
+
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: #c8ceda; flex: none; }
+  .foot-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .foot-time { margin-left: auto; font-variant-numeric: tabular-nums; flex: none; }
+
+  .actions { display: none; gap: 8px; margin-top: 18px; }
+
+  body.error .spin,
+  body.error .bar,
+  body.error .steps { display: none; }
+
+  body.error .actions { display: flex; }
+  body.error .status { color: var(--danger); }
+  body.error .detail { margin-left: 0; }
+  body.error .row { align-items: flex-start; }
+  body.error .status-block { justify-content: flex-start; padding-top: 6px; }
+
+  body.error .row::before {
+    content: "!";
+    width: 18px; height: 18px;
+    flex: none;
+    border-radius: 50%;
+    background: #fdecec;
+    color: var(--danger);
+    font-size: 12px;
+    font-weight: 700;
+    display: grid; place-items: center;
+    margin-top: 3px;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: var(--brand);
+    color: #fff;
+    cursor: pointer;
+    transition: filter 120ms ease, background 120ms ease;
+  }
+
+  button:hover { filter: brightness(1.06); }
+  button.ghost { background: #fff; border-color: #e2e6f0; color: #4a5164; }
+  button.ghost:hover { background: #f7f8fc; filter: none; }
+</style>
+</head>
+<body>
+  <div class="card" id="card">
+    <header data-tauri-drag-region>
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M3.2 15.6c2.6 2.4 6.1 3.3 9.4 2.5 3.9-.9 6.9-3.9 7.7-7.7-2.5 2-5.4 2.9-8 2.4 2.3-1.1 4.1-2.9 5.1-5.1-3.6 1-6.6 3.3-8.2 6.4-1.5-.6-2.9-1.6-4-2.9-.9 1.5-1.5 3.1-1.9 4.4Z" fill="#fff" opacity=".95"/>
+          <circle cx="17.6" cy="7.4" r="1.15" fill="#fff" opacity=".55"/>
+        </svg>
+      </div>
+      <div data-tauri-drag-region>
+        <div class="brand-name" data-tauri-drag-region>DeepSeek Harness</div>
+        <div class="brand-sub" data-tauri-drag-region>桌面版 · 本地 Web UI</div>
+      </div>
+      <div class="badge">启动即更新</div>
+    </header>
+
+    <main>
+      <div class="status-block">
+        <div class="row">
+          <div class="spin"></div>
+          <div class="status" id="status">正在启动…</div>
+        </div>
+        <div class="detail" id="detail"></div>
+        <div class="bar"></div>
+        <div class="actions">
+          <button id="retry">重试</button>
+          <button class="ghost" id="openLog">查看日志</button>
+          <button class="ghost" id="quit">退出</button>
+        </div>
+
+        <div class="steps" id="steps">
+          <div class="step" data-step="0"><span class="sdot"></span>检查更新</div>
+          <div class="step" data-step="1"><span class="sdot"></span>启动服务</div>
+          <div class="step" data-step="2"><span class="sdot"></span>加载界面</div>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <span class="dot"></span>
+      <span class="foot-text" id="foot">首次启动会下载 dsh 运行时，请稍候</span>
+      <span class="foot-time" id="time">0.0s</span>
+    </footer>
+  </div>
+
+<script>
+  const card = document.getElementById('card');
+  const statusEl = document.getElementById('status');
+  const detailEl = document.getElementById('detail');
+  const footEl = document.getElementById('foot');
+  const timeEl = document.getElementById('time');
+  const steps = Array.from(document.querySelectorAll('.step'));
+
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    timeEl.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + 's';
+  }, 100);
+
+  const FOOT = {
+    checking: '每次启动都会检查 npm 上的最新版本',
+    installing: '更新时只下载有变化的包',
+    starting: '本地服务仅监听 127.0.0.1',
+    ready: '已就绪',
+    error: '日志中有完整输出',
+  };
+
+  const STEP = { checking: 0, installing: 0, starting: 1, ready: 2 };
+
+  function markSteps(index) {
+    steps.forEach((el, i) => {
+      el.classList.toggle('done', i < index);
+      el.classList.toggle('active', i === index);
+    });
+  }
+
+  function render(payload) {
+    if (!payload || !payload.phase) return;
+    const phase = payload.phase;
+
+    if (phase === 'error') {
+      document.body.classList.add('error');
+      statusEl.textContent = payload.title || '启动失败';
+      const hint = payload.hint ? String(payload.hint).split('\n').slice(-3).join('\n') : '';
+      detailEl.textContent = [payload.text, hint].filter(Boolean).join('\n');
+      footEl.textContent = FOOT.error;
+      clearInterval(timer);
+      return;
+    }
+
+    document.body.classList.remove('error');
+    const index = STEP[phase];
+    if (typeof index === 'number') markSteps(index);
+
+    if (phase === 'ready') {
+      statusEl.textContent = '准备就绪';
+      detailEl.textContent = '';
+      footEl.textContent = FOOT.ready;
+      return;
+    }
+
+    statusEl.textContent = payload.text || statusEl.textContent;
+    detailEl.textContent = payload.detail || '';
+    footEl.textContent =
+      phase === 'installing' && payload.first ? '安装完成后，后续启动只需约 10 秒' : FOOT[phase] || footEl.textContent;
+  }
+
+  const bridge = window.__TAURI__;
+  const hasTauri = !!(bridge && bridge.event && bridge.core);
+
+  if (hasTauri) {
+    bridge.event.listen('dsh-status', (event) => render(event.payload));
+    document.getElementById('retry').onclick = () => bridge.core.invoke('dsh_retry');
+    document.getElementById('openLog').onclick = () => bridge.core.invoke('dsh_open_log');
+    document.getElementById('quit').onclick = () => bridge.core.invoke('dsh_quit');
+  } else {
+    // 浏览器里直接打开时走演示流程，方便调界面
+    const demo = [
+      { phase: 'checking', text: '正在检查最新版本…', detail: '' },
+      { phase: 'installing', text: '正在安装 v0.2.2-rc.1', detail: '首次启动需要下载完整运行时，约 1–3 分钟', first: true },
+      { phase: 'starting', text: '正在启动本地服务…', detail: 'dsh v0.2.2-rc.1' },
+    ];
+    demo.forEach((payload, index) => setTimeout(() => render(payload), 600 + index * 1600));
+    document.getElementById('retry').onclick = () =>
+      render({ phase: 'error', title: '启动失败', text: '未检测到 Node.js，请先安装后重试' });
+  }
+</script>
+</body>
+</html>

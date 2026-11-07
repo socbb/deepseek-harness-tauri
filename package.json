@@ -1,0 +1,14 @@
+{
+  "name": "deepseek-harness-tauri",
+  "private": true,
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 桌面版（Tauri 2）：每次启动自动更新 dsh 并承载本地 Web UI",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icon": "tauri icon app-icon.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
