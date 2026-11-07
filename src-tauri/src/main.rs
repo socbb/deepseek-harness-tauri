@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 const PKG_NAME: &str = "@deepseek-ai/dsh";
 const INSTALL_TIMEOUT_SECS: u64 = 20 * 60;
@@ -68,6 +69,7 @@ impl Status {
 
 fn main() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![dsh_retry, dsh_open_log, dsh_quit])
         .setup(|app| {
@@ -137,77 +139,44 @@ fn boot_inner(app: &AppHandle) -> Result<(), String> {
         ),
     );
 
-    emit_status(app, Status::new("checking", "正在检查最新版本…", ""));
+    // 先定位 Node：不依赖 PATH，nvm 的软链常常是断的
+    let toolchain = resolve_toolchain()?;
+    log_line(&log, &format!("node = {}", toolchain.node.display()));
 
     let installed = installed_version(&runtime_dir);
-    let mut target = installed.clone();
 
-    let skip_update = std::env::var("DSH_SKIP_UPDATE")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True"))
-        .unwrap_or(false);
-
-    if skip_update && installed.is_some() {
-        log_line(&log, "DSH_SKIP_UPDATE 生效，跳过版本检查");
-        emit_status(
-            app,
-            Status::new(
-                "starting",
-                &format!("已跳过更新（v{}）", installed.clone().unwrap_or_default()),
-                "",
-            ),
-        );
-    } else {
-        match npm_latest(&runtime_dir) {
-            Ok(latest) => {
-                log_line(&log, &format!("registry latest={latest} 本地={installed:?}"));
-                let need_update = match installed.as_deref() {
-                    Some(current) => compare_versions(current, &latest) == Ordering::Less,
-                    None => true,
-                };
-                if need_update {
-                    install(app, &runtime_dir, &latest, installed.as_deref(), &log)?;
-                    // 安装失败会回退到旧版本，按实际装成的版本继续
-                    target = installed_version(&runtime_dir).or(Some(latest));
-                } else {
-                    emit_status(
-                        app,
-                        Status::new("starting", &format!("已是最新版本 v{latest}"), ""),
-                    );
-                }
-            }
-            Err(err) => {
-                log_line(&log, &format!("检查最新版本失败：{err}"));
-                match installed.clone() {
-                    Some(version) => emit_status(
-                        app,
-                        Status::new(
-                            "starting",
-                            "无法检查更新，使用已安装版本",
-                            &format!("v{version}"),
-                        ),
-                    ),
-                    None => {
-                        return Err(
-                            "无法连接 npm registry，且本机没有可用的 dsh 运行时。请检查网络后重试。"
-                                .to_string(),
-                        )
-                    }
-                }
-            }
+    // 首次运行（没有运行时）必须先装；已装则直接启动，不在启动阶段等版本检查
+    let version = match installed {
+        Some(version) => {
+            log_line(&log, &format!("已安装 v{version}，直接启动"));
+            version
         }
-    }
+        None => {
+            emit_status(app, Status::new("checking", "首次启动，正在准备运行时…", ""));
+            let latest = npm_latest(&runtime_dir, &toolchain).map_err(|err| {
+                format!(
+                    "首次启动需要下载 dsh 运行时，但无法连接 npm registry。请检查网络后重试。\n（{err}）"
+                )
+            })?;
+            install(app, &runtime_dir, &latest, None, &log, &toolchain)?;
+            installed_version(&runtime_dir).unwrap_or(latest)
+        }
+    };
 
-    let version = target.unwrap_or_default();
     emit_status(
         app,
         Status::new("starting", "正在启动本地服务…", &format!("dsh v{version}")),
     );
 
-    let url = start_server(app, &runtime_dir, &workspace, &log)?;
+    let url = start_server(app, &runtime_dir, &workspace, &log, &toolchain)?;
     log_line(&log, &format!("服务已就绪：{url}"));
 
     emit_status(app, Status::new("starting", "正在加载界面…", ""));
-    show_main(app, url, log)
+    show_main(app, url, log)?;
+
+    // 界面已经打开：更新检查放后台，发现新版本再弹窗询问
+    spawn_update_check(app.clone());
+    Ok(())
 }
 
 // ------------------------------------------------------------------ 版本
@@ -226,8 +195,8 @@ fn installed_version(runtime_dir: &Path) -> Option<String> {
         .map(|text| text.to_string())
 }
 
-fn npm_latest(runtime_dir: &Path) -> Result<String, String> {
-    let mut command = npm_command();
+fn npm_latest(runtime_dir: &Path, toolchain: &Toolchain) -> Result<String, String> {
+    let mut command = toolchain.npm_command();
     command
         .args(["view", PKG_NAME, "dist-tags.latest", "--json"])
         .current_dir(runtime_dir);
@@ -295,6 +264,7 @@ fn install(
     version: &str,
     previous: Option<&str>,
     log: &Path,
+    toolchain: &Toolchain,
 ) -> Result<(), String> {
     fs::create_dir_all(runtime_dir).map_err(|e| format!("无法创建运行时目录：{e}"))?;
 
@@ -347,7 +317,7 @@ fn install(
         .open(log)
         .map_err(|e| format!("打开日志失败：{e}"))?;
 
-    let mut command = npm_command();
+    let mut command = toolchain.npm_command();
     command
         .args([
             "install",
@@ -430,6 +400,7 @@ fn start_server(
     runtime_dir: &Path,
     workspace: &Path,
     log: &Path,
+    toolchain: &Toolchain,
 ) -> Result<String, String> {
     let bin =
         dsh_bin(runtime_dir).ok_or_else(|| format!("找不到 dsh 入口：{}", runtime_dir.display()))?;
@@ -443,7 +414,7 @@ fn start_server(
         ),
     );
 
-    let mut command = Command::new("node");
+    let mut command = Command::new(&toolchain.node);
     command
         .arg(&bin)
         .args(["web", "--no-open", "--port", "0"])
@@ -454,7 +425,7 @@ fn start_server(
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("无法启动 dsh（node 是否在 PATH 中？）：{e}"))?;
+        .map_err(|e| format!("无法启动 dsh（{}）：{e}", toolchain.node.display()))?;
     let pid = child.id();
 
     let stdout = child.stdout.take().ok_or("无法读取 dsh 输出")?;
@@ -575,6 +546,141 @@ fn show_main(app: &AppHandle, url: String, log: PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+// ------------------------------------------------------------------ 更新提示
+
+fn runtime_dir_of(app: &AppHandle) -> PathBuf {
+    env_path("DSH_RUNTIME_DIR").unwrap_or_else(|| {
+        app.path()
+            .app_data_dir()
+            .map(|dir| dir.join("runtime"))
+            .unwrap_or_else(|_| PathBuf::from("runtime"))
+    })
+}
+
+fn skip_update_env() -> bool {
+    std::env::var("DSH_SKIP_UPDATE")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "True"))
+        .unwrap_or(false)
+}
+
+/// 界面已经打开后，在后台查一次 npm 上的最新版本；有更新就弹窗，不阻塞启动
+fn spawn_update_check(app: AppHandle) {
+    if skip_update_env() {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        // 让主窗口先渲染完，避免弹窗盖住首屏
+        std::thread::sleep(Duration::from_secs(5));
+
+        let dir = runtime_dir_of(&app);
+        let log = log_file(&app);
+
+        let toolchain = match resolve_toolchain() {
+            Ok(toolchain) => toolchain,
+            Err(err) => {
+                log_line(&log, &format!("跳过更新检查：{err}"));
+                return;
+            }
+        };
+
+        let installed = match installed_version(&dir) {
+            Some(version) => version,
+            None => return,
+        };
+
+        let latest = match npm_latest(&dir, &toolchain) {
+            Ok(latest) => latest,
+            Err(err) => {
+                log_line(&log, &format!("更新检查失败：{err}"));
+                return;
+            }
+        };
+
+        log_line(
+            &log,
+            &format!("更新检查：本地 v{installed}，registry v{latest}"),
+        );
+
+        if compare_versions(&installed, &latest) != Ordering::Less {
+            return;
+        }
+
+        let app_for_update = app.clone();
+        app.dialog()
+            .message(format!(
+                "发现新版本 v{latest}（当前 v{installed}）。\n现在更新吗？更新完成后需要重启应用。"
+            ))
+            .title("DeepSeek Harness 更新")
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "立即更新".to_string(),
+                "稍后".to_string(),
+            ))
+            .show(move |confirmed| {
+                if !confirmed {
+                    return;
+                }
+                let app = app_for_update.clone();
+                std::thread::spawn(move || run_update(app, latest, installed));
+            });
+    });
+}
+
+fn run_update(app: AppHandle, latest: String, previous: String) {
+    let dir = runtime_dir_of(&app);
+    let log = log_file(&app);
+
+    let toolchain = match resolve_toolchain() {
+        Ok(toolchain) => toolchain,
+        Err(err) => {
+            show_message(&app, "更新失败", &err);
+            return;
+        }
+    };
+
+    // 先停掉 dsh，避免 npm 覆盖正在被占用的文件
+    stop_runtime(&app);
+    log_line(&log, &format!("开始更新 v{previous} → v{latest}"));
+
+    if let Err(err) = install(&app, &dir, &latest, Some(&previous), &log, &toolchain) {
+        log_line(&log, &format!("更新失败：{err}"));
+        show_message(
+            &app,
+            "更新失败",
+            &format!("{err}\n\n可以稍后重试，或查看日志：{}", log.display()),
+        );
+        return;
+    }
+
+    let now = installed_version(&dir).unwrap_or_else(|| previous.clone());
+    if compare_versions(&now, &latest) != Ordering::Equal {
+        show_message(
+            &app,
+            "更新未完成",
+            &format!("当前仍是 v{now}，建议稍后重试或查看日志：{}", log.display()),
+        );
+        return;
+    }
+
+    // 服务已经停了，这里直接重启，避免停在一个不可用的界面
+    let app_for_restart = app.clone();
+    app.dialog()
+        .message(format!("已更新到 v{latest}，点击「确定」后重启应用。"))
+        .title("更新完成")
+        .buttons(MessageDialogButtons::Ok)
+        .show(move |_| {
+            app_for_restart.request_restart();
+        });
+}
+
+fn show_message(app: &AppHandle, title: &str, message: &str) {
+    app.dialog()
+        .message(message)
+        .title(title)
+        .buttons(MessageDialogButtons::Ok)
+        .show(|_| {});
+}
+
 // ------------------------------------------------------------------ 命令
 
 #[tauri::command]
@@ -661,18 +767,87 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn npm_command() -> Command {
-    #[cfg(windows)]
-    {
-        // 走 cmd 才能执行 npm.cmd
-        let mut command = Command::new("cmd");
-        command.args(["/d", "/s", "/c", "npm"]);
+/// 本机的 Node / npm 位置。不直接依赖 PATH：Windows 上 nvm 的软链经常是断的。
+struct Toolchain {
+    node: PathBuf,
+    npm_cli: Option<PathBuf>,
+    npm_cmd: Option<PathBuf>,
+}
+
+impl Toolchain {
+    fn npm_command(&self) -> Command {
+        if let Some(cli) = &self.npm_cli {
+            let mut command = Command::new(&self.node);
+            command.arg(cli);
+            return command;
+        }
+        let npm_cmd = self.npm_cmd.as_ref().expect("npm_cmd 缺失");
+        let shell = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+        let mut command = Command::new(shell);
+        command.args(["/d", "/s", "/c"]).arg(npm_cmd);
         command
     }
-    #[cfg(not(windows))]
-    {
-        Command::new("npm")
+}
+
+fn node_candidate_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
     }
+    for key in [
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "NVM_HOME",
+        "NVM_SYMLINK",
+    ] {
+        let Some(base) = std::env::var_os(key) else {
+            continue;
+        };
+        let base = PathBuf::from(base);
+        match key {
+            "ProgramFiles" | "ProgramFiles(x86)" => dirs.push(base.join("nodejs")),
+            "LOCALAPPDATA" => dirs.push(base.join("Programs").join("nodejs")),
+            "APPDATA" => dirs.push(base.join("nvm")),
+            _ => dirs.push(base),
+        }
+    }
+    dirs.push(PathBuf::from(r"C:\nvm4w\nodejs"));
+    dirs
+}
+
+fn resolve_toolchain() -> Result<Toolchain, String> {
+    for dir in node_candidate_dirs() {
+        let node = dir.join("node.exe");
+        if !node.is_file() {
+            continue;
+        }
+        let cli = dir
+            .join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js");
+        let npm_cli = if cli.is_file() { Some(cli) } else { None };
+        let cmd_path = dir.join("npm.cmd");
+        let npm_cmd = if cmd_path.is_file() {
+            Some(cmd_path)
+        } else {
+            None
+        };
+        if npm_cli.is_none() && npm_cmd.is_none() {
+            continue;
+        }
+        return Ok(Toolchain {
+            node,
+            npm_cli,
+            npm_cmd,
+        });
+    }
+    Err(
+        "未检测到 Node.js（需要 node 与 npm）。请安装 Node.js 24 LTS 后重试：https://nodejs.org/"
+            .to_string(),
+    )
 }
 
 fn hide_window(command: &mut Command) {
@@ -705,11 +880,13 @@ fn kill_pid(pid: u32) {
 fn stop_runtime(app: &AppHandle) {
     let state = app.state::<AppState>();
 
-    if let Some(pid) = state.installer_pid.lock().unwrap().take() {
+    let installer_pid = state.installer_pid.lock().unwrap().take();
+    if let Some(pid) = installer_pid {
         kill_pid(pid);
     }
 
-    if let Some(mut child) = state.server.lock().unwrap().take() {
+    let server = state.server.lock().unwrap().take();
+    if let Some(mut child) = server {
         kill_pid(child.id());
         let _ = child.wait();
     }
