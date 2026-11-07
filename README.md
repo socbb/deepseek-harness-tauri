@@ -13,7 +13,17 @@
 3. 没有运行时（首次启动）→ 先下载安装 `@deepseek-ai/dsh`，再走第 2 步
 4. 界面打开约 5 秒后 → 后台查 registry，有新版弹窗：「立即更新」→ 停服务 → 安装 → 提示重启
 
+也可以随时用菜单 **应用 → 检查更新…** 手动查一次：有新版本会问你，已是最新会给个确认提示。
+
 更新过程不阻塞使用：查到没有新版本就静默结束；用户点「稍后」也不影响当前会话。
+
+## 菜单
+
+| 菜单 | 项 | 作用 |
+| --- | --- | --- |
+| 应用 | 检查更新… | 立即查 registry，结果一定会反馈（有新版本/已最新/失败原因） |
+| 应用 | 退出 | 退出应用（会带走 dsh 子进程） |
+| 视图 | 重新加载页面 | 页面卡住时用，`location.reload()` |
 
 ## 环境要求
 
@@ -55,7 +65,7 @@ ui/
 | 启动服务 | `node <bin> web --no-open --port 0`，`CREATE_NO_WINDOW` 避免弹黑框 |
 | 取地址 | 逐行读 stdout，抓 `http://127.0.0.1:PORT/?token=…`；**不带 token 会 401** |
 | 开窗 | 地址就绪后建隐藏窗口，1.4 秒后显示并关掉启动页（启动页置顶盖住白屏） |
-| 更新提示 | 窗口起来 5 秒后后台比对版本，`tauri-plugin-dialog` 弹原生对话框；确认后停服务→安装→`request_restart()` |
+| 更新提示 | 窗口起来 5 秒后后台比对版本；也可以从菜单「检查更新…」手动触发。两种情况都走同一套逻辑：`tauri-plugin-dialog` 弹原生对话框，确认后停服务→安装→`request_restart()` |
 | 收尾 | `RunEvent::Exit` → `taskkill /pid /T /F`，连 npm 安装进程一起收 |
 
 数据目录：`%APPDATA%\com.deepseek.harness.desktop\`（`runtime\` 放运行时，`logs\desktop.log` 是日志）。
@@ -65,6 +75,7 @@ ui/
 - 能编译、能跑：debug / release 均通过，产物 exe 9.6 MB，NSIS 安装包 2.08 MB
 - **纯净 PATH 下首次启动**（模拟从资源管理器双击）：自动定位到 `C:\Program Files\nodejs`，装完 652 个包共约 80 秒，服务就绪并开窗
 - 二次启动约 12 秒；窗口起来 5 秒后后台检查更新，无新版本时静默结束
+- 菜单「应用 → 检查更新…」触发的手动检查与后台检查共用同一逻辑（带并发保护，不会重复弹窗）
 - 关闭窗口后 dsh 子进程被回收（无孤儿 node）
 - 关键 API 已比对 docs.rs 2.12 签名：`tauri::Url`、`AppHandle::{run_on_main_thread, request_restart}`、`WebviewWindowBuilder`、`MessageDialogBuilder`
 

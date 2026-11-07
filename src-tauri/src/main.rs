@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 const PKG_NAME: &str = "@deepseek-ai/dsh";
@@ -32,6 +33,7 @@ struct AppState {
     server: Mutex<Option<Child>>,
     installer_pid: Mutex<Option<u32>>,
     booting: Mutex<bool>,
+    checking: AtomicBool,
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -80,11 +82,48 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用失败");
 
+    build_menu(&app);
+
+    app.on_menu_event(|handle, event| match event.id().as_ref() {
+        "check-update" => check_update(handle.clone(), true),
+        "reload" => {
+            if let Some(main) = handle.get_webview_window("main") {
+                let _ = main.eval("location.reload()");
+            }
+        }
+        "quit" => handle.exit(0),
+        _ => {}
+    });
+
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {
             stop_runtime(app_handle);
         }
     });
+}
+
+/// 菜单栏：手动检查更新 / 重新加载 / 退出
+fn build_menu(app: &tauri::App) {
+    let result = (|| -> tauri::Result<()> {
+        let check = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
+        let reload = MenuItem::with_id(app, "reload", "重新加载页面", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+
+        let app_menu = Submenu::with_items(app, "应用", true, &[&check, &quit])?;
+        let view_menu = Submenu::with_items(app, "视图", true, &[&reload])?;
+        let menu = Menu::with_items(app, &[&app_menu, &view_menu])?;
+
+        app.set_menu(menu)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            let log = log_file(app.handle());
+            log_line(&log, "菜单已就绪：应用（检查更新 / 退出）、视图（重新加载）");
+        }
+        Err(err) => eprintln!("菜单创建失败：{err}"),
+    }
 }
 
 // -------------------------------------------------------------------- 流程
@@ -175,7 +214,7 @@ fn boot_inner(app: &AppHandle) -> Result<(), String> {
     show_main(app, url, log)?;
 
     // 界面已经打开：更新检查放后台，发现新版本再弹窗询问
-    spawn_update_check(app.clone());
+    schedule_background_check(app.clone());
     Ok(())
 }
 
@@ -563,67 +602,87 @@ fn skip_update_env() -> bool {
         .unwrap_or(false)
 }
 
-/// 界面已经打开后，在后台查一次 npm 上的最新版本；有更新就弹窗，不阻塞启动
-fn spawn_update_check(app: AppHandle) {
+/// 界面打开后延迟几秒再查，避免弹窗盖住首屏；查不到就静默
+fn schedule_background_check(app: AppHandle) {
     if skip_update_env() {
         return;
     }
-
     std::thread::spawn(move || {
-        // 让主窗口先渲染完，避免弹窗盖住首屏
         std::thread::sleep(Duration::from_secs(5));
+        check_update(app, false);
+    });
+}
 
-        let dir = runtime_dir_of(&app);
-        let log = log_file(&app);
-
-        let toolchain = match resolve_toolchain() {
-            Ok(toolchain) => toolchain,
-            Err(err) => {
-                log_line(&log, &format!("跳过更新检查：{err}"));
-                return;
-            }
-        };
-
-        let installed = match installed_version(&dir) {
-            Some(version) => version,
-            None => return,
-        };
-
-        let latest = match npm_latest(&dir, &toolchain) {
-            Ok(latest) => latest,
-            Err(err) => {
-                log_line(&log, &format!("更新检查失败：{err}"));
-                return;
-            }
-        };
-
-        log_line(
-            &log,
-            &format!("更新检查：本地 v{installed}，registry v{latest}"),
-        );
-
-        if compare_versions(&installed, &latest) != Ordering::Less {
+/// 检查更新。manual = true 时无论结果如何都给反馈；false 时只有在有新版本时才弹窗
+fn check_update(app: AppHandle, manual: bool) {
+    {
+        let state = app.state::<AppState>();
+        if state.checking.swap(true, AtomicOrdering::SeqCst) {
             return;
         }
+    }
 
-        let app_for_update = app.clone();
-        app.dialog()
-            .message(format!(
-                "发现新版本 v{latest}（当前 v{installed}）。\n现在更新吗？更新完成后需要重启应用。"
-            ))
-            .title("DeepSeek Harness 更新")
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "立即更新".to_string(),
-                "稍后".to_string(),
-            ))
-            .show(move |confirmed| {
-                if !confirmed {
-                    return;
+    std::thread::spawn(move || {
+        let log = log_file(&app);
+        let outcome = latest_and_installed(&app);
+
+        app.state::<AppState>()
+            .checking
+            .store(false, AtomicOrdering::SeqCst);
+
+        match outcome {
+            Ok((latest, installed)) => {
+                log_line(
+                    &log,
+                    &format!("更新检查：本地 v{installed}，registry v{latest}"),
+                );
+                if compare_versions(&installed, &latest) == Ordering::Less {
+                    prompt_update(app.clone(), latest, installed);
+                } else if manual {
+                    show_message(
+                        &app,
+                        "检查更新",
+                        &format!("已是最新版本（v{installed}）。"),
+                    );
                 }
-                let app = app_for_update.clone();
-                std::thread::spawn(move || run_update(app, latest, installed));
-            });
+            }
+            Err(err) => {
+                log_line(&log, &format!("更新检查失败：{err}"));
+                if manual {
+                    show_message(&app, "检查更新失败", &err);
+                }
+            }
+        }
     });
+}
+
+fn latest_and_installed(app: &AppHandle) -> Result<(String, String), String> {
+    let dir = runtime_dir_of(app);
+    let toolchain = resolve_toolchain()?;
+    let installed =
+        installed_version(&dir).ok_or_else(|| "没有找到已安装的 dsh 运行时".to_string())?;
+    let latest = npm_latest(&dir, &toolchain)?;
+    Ok((latest, installed))
+}
+
+fn prompt_update(app: AppHandle, latest: String, installed: String) {
+    let app_for_update = app.clone();
+    app.dialog()
+        .message(format!(
+            "发现新版本 v{latest}（当前 v{installed}）。\n现在更新吗？更新完成后需要重启应用。"
+        ))
+        .title("DeepSeek Harness 更新")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "立即更新".to_string(),
+            "稍后".to_string(),
+        ))
+        .show(move |confirmed| {
+            if !confirmed {
+                return;
+            }
+            let app = app_for_update.clone();
+            std::thread::spawn(move || run_update(app, latest, installed));
+        });
 }
 
 fn run_update(app: AppHandle, latest: String, previous: String) {
