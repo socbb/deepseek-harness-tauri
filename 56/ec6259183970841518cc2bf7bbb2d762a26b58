@@ -1,0 +1,34 @@
+.gitignore
+  h_b7c601a3781e0c 1-4
+README.md
+  h_b7c601a3781e0c 1-92
+package-lock.json
+  h_b7c601a3781e0c 1-232
+package.json
+  h_b7c601a3781e0c 1-14
+src-tauri/Cargo.toml
+  h_b7c601a3781e0c 1-14
+src-tauri/build.rs
+  h_b7c601a3781e0c 1-3
+src-tauri/capabilities/default.json
+  h_b7c601a3781e0c 1-6
+src-tauri/src/main.rs
+  h_b7c601a3781e0c 1-716
+src-tauri/tauri.conf.json
+  h_b7c601a3781e0c 1-47
+ui/index.html
+  h_b7c601a3781e0c 1-22
+ui/splash.html
+  h_b7c601a3781e0c 1-341
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "56ec6259183970841518cc2bf7bbb2d762a26b58",
+  "prompts": {},
+  "humans": {
+    "h_b7c601a3781e0c": {
+      "author": "陈波波 <socbb@uap.local>"
+    }
+  }
+}
