@@ -1,0 +1,14 @@
+README.md
+  h_b7c601a3781e0c 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "17508b1c0e9f823f9969c07510d7124d889a63d9",
+  "prompts": {},
+  "humans": {
+    "h_b7c601a3781e0c": {
+      "author": "陈波波 <socbb@uap.local>"
+    }
+  }
+}
