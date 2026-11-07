@@ -14,7 +14,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, RunEvent, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
@@ -29,6 +28,122 @@ const TOAST_WIDTH: f64 = 320.0;
 const TOAST_H_ACTION: f64 = 124.0;
 const TOAST_H_INFO: f64 = 88.0;
 const TOAST_MARGIN: f64 = 14.0;
+
+/// 注入到 dsh 页面里的角标：克隆「更多」那一行的样式，插到它上面
+const BADGE_SCRIPT: &str = r#"
+(function () {
+  if (window.__dshUpdate) return;
+
+  var state = { version: '', visible: false, node: null, observer: null, timer: 0 };
+
+  var ICON =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto">' +
+    '<path d="M12 4v9"/><path d="M8.5 10.5 12 14l3.5-3.5"/><path d="M5.5 18.5h13"/></svg>';
+
+  function ensureStyle() {
+    if (document.getElementById('dsh-update-style')) return;
+    var style = document.createElement('style');
+    style.id = 'dsh-update-style';
+    style.textContent = '[data-dsh-update]:hover{background:rgba(127,127,127,.14)}';
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  // 侧栏底部的「更多」：可见、文字是「更多」、位置最靠下
+  function findBottomMore() {
+    var buttons = document.querySelectorAll('button');
+    var best = null;
+    var bestTop = -Infinity;
+    for (var i = 0; i < buttons.length; i++) {
+      var button = buttons[i];
+      if (button.offsetParent === null) continue;
+      if ((button.textContent || '').trim() !== '更多') continue;
+      var top = button.getBoundingClientRect().top;
+      if (top > bestTop) {
+        bestTop = top;
+        best = button;
+      }
+    }
+    return best;
+  }
+
+  function buildNode() {
+    var node = document.createElement('div');
+    node.setAttribute('data-dsh-update', '1');
+    node.style.cssText = [
+      'display:flex',
+      'align-items:center',
+      'gap:12px',
+      'height:32px',
+      'margin:0',
+      'padding:0 8px',
+      'border-radius:8px',
+      'cursor:pointer',
+      'font-size:13px',
+      'line-height:1',
+      'color:inherit',
+      'user-select:none'
+    ].join(';');
+    node.innerHTML =
+      ICON +
+      '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">新版本 v' + state.version + '</span>';
+    node.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      window.__dshUpdateClick = true;
+    });
+    return node;
+  }
+
+  function insert() {
+    if (!state.visible) return;
+    if (state.node && state.node.isConnected) return;
+
+    var button = findBottomMore();
+    if (!button) return;
+
+    // 插到 footer（含「更多」那一块）的正上方
+    var footer = button.closest('[class*="footArea"]');
+    var host = footer ? footer.parentElement : button.parentElement.parentElement.parentElement;
+    var anchor = footer || button.parentElement.parentElement;
+    if (!host || !anchor) return;
+
+    state.node = buildNode();
+    host.insertBefore(state.node, anchor);
+  }
+
+  function schedule() {
+    if (state.timer) return;
+    state.timer = setTimeout(function () {
+      state.timer = 0;
+      insert();
+    }, 150);
+  }
+
+  window.__dshUpdate = {
+    show: function (version) {
+      state.version = version || '';
+      state.visible = true;
+      ensureStyle();
+      insert();
+      if (!state.observer) {
+        state.observer = new MutationObserver(schedule);
+        state.observer.observe(document.documentElement, { childList: true, subtree: true });
+      }
+    },
+    hide: function () {
+      state.visible = false;
+      if (state.node && state.node.isConnected) state.node.remove();
+      state.node = null;
+      if (state.observer) {
+        state.observer.disconnect();
+        state.observer = null;
+      }
+    }
+  };
+
+  // 页面只负责置标记，点击由 Rust 侧轮询读取（远程页面的 IPC 被 ACL 拦，不可用）
+})();
+"#;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -94,7 +209,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             dsh_retry,
             dsh_open_log,
-            dsh_quit,
             dsh_toast_current,
             dsh_dismiss,
             dsh_update_now
@@ -107,48 +221,11 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用失败");
 
-    build_menu(&app);
-
-    app.on_menu_event(|handle, event| match event.id().as_ref() {
-        "check-update" => check_update(handle.clone(), true),
-        "reload" => {
-            if let Some(main) = handle.get_webview_window("main") {
-                let _ = main.eval("location.reload()");
-            }
-        }
-        "quit" => handle.exit(0),
-        _ => {}
-    });
-
     app.run(|app_handle, event| {
         if let RunEvent::Exit = event {
             stop_runtime(app_handle);
         }
     });
-}
-
-/// 菜单栏：手动检查更新 / 重新加载 / 退出
-fn build_menu(app: &tauri::App) {
-    let result = (|| -> tauri::Result<()> {
-        let check = MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
-        let reload = MenuItem::with_id(app, "reload", "重新加载页面", true, None::<&str>)?;
-        let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-
-        let app_menu = Submenu::with_items(app, "应用", true, &[&check, &quit])?;
-        let view_menu = Submenu::with_items(app, "视图", true, &[&reload])?;
-        let menu = Menu::with_items(app, &[&app_menu, &view_menu])?;
-
-        app.set_menu(menu)?;
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => {
-            let log = log_file(app.handle());
-            log_line(&log, "菜单已就绪：应用（检查更新 / 退出）、视图（重新加载）");
-        }
-        Err(err) => eprintln!("菜单创建失败：{err}"),
-    }
 }
 
 // -------------------------------------------------------------------- 流程
@@ -238,8 +315,9 @@ fn boot_inner(app: &AppHandle) -> Result<(), String> {
     emit_status(app, Status::new("starting", "正在加载界面…", ""));
     show_main(app, url, log)?;
 
-    // 界面已经打开：更新检查放后台，发现新版本再弹窗询问
+    // 界面已经打开：更新检查放后台，发现新版本再挂角标
     schedule_background_check(app.clone());
+    spawn_badge_watcher(app.clone());
     Ok(())
 }
 
@@ -587,6 +665,7 @@ fn show_main(app: &AppHandle, url: String, log: PathBuf) -> Result<(), String> {
         .inner_size(1360.0, 900.0)
         .min_inner_size(960.0, 620.0)
         .visible(false)
+        .initialization_script(BADGE_SCRIPT)
         .build()
         .map_err(|e| format!("创建主窗口失败：{e}"))?;
 
@@ -642,12 +721,12 @@ fn schedule_background_check(app: AppHandle) {
     }
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(5));
-        check_update(app, false);
+        check_update(app);
     });
 }
 
 /// 检查更新。manual = true 时无论结果如何都给反馈；false 时只有在有新版本时才弹窗
-fn check_update(app: AppHandle, manual: bool) {
+fn check_update(app: AppHandle) {
     {
         let state = app.state::<AppState>();
         if state.checking.swap(true, AtomicOrdering::SeqCst) {
@@ -670,36 +749,65 @@ fn check_update(app: AppHandle, manual: bool) {
                     &format!("更新检查：本地 v{installed}，registry v{latest}"),
                 );
                 if compare_versions(&installed, &latest) == Ordering::Less {
-                    prompt_update(app.clone(), latest, installed);
-                } else if manual {
-                    show_toast(
+                    {
+                        let state = app.state::<AppState>();
+                        *state.pending_update.lock().unwrap() = Some((latest.clone(), installed));
+                    }
+                    eval_main(
                         &app,
-                        ToastPayload {
-                            kind: "info".to_string(),
-                            title: "已是最新版本".to_string(),
-                            body: format!("当前 v{installed}"),
-                            action: false,
-                            auto_hide_ms: 4000,
-                        },
+                        &format!("window.__dshUpdate && window.__dshUpdate.show('{latest}')"),
                     );
+                    log_line(&log, &format!("侧栏已显示更新角标：v{latest}"));
+
+
                 }
             }
             Err(err) => {
                 log_line(&log, &format!("更新检查失败：{err}"));
-                if manual {
-                    show_toast(
-                        &app,
-                        ToastPayload {
-                            kind: "error".to_string(),
-                            title: "检查更新失败".to_string(),
-                            body: err,
-                            action: false,
-                            auto_hide_ms: 8000,
-                        },
-                    );
-                }
             }
         }
+    });
+}
+
+fn eval_main(app: &AppHandle, js: &str) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.eval(js);
+    }
+}
+
+/// 侧栏角标的点击没有可用的 IPC（远程页面被 ACL 拦），改为轮询页面里的标记。
+/// 顺便在页面刷新后把角标补回去。
+fn spawn_badge_watcher(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(1200));
+
+        let version = {
+            let state = app.state::<AppState>();
+            let guard = state.pending_update.lock().unwrap();
+            guard.as_ref().map(|(latest, _)| latest.clone())
+        };
+
+        let Some(version) = version else {
+            continue;
+        };
+        let Some(main) = app.get_webview_window("main") else {
+            continue;
+        };
+
+        let js = format!(
+            "(function(){{var c=window.__dshUpdateClick;window.__dshUpdateClick=false;\
+             if(!window.__dshUpdate)return 'none';\
+             if(!document.querySelector('[data-dsh-update]'))window.__dshUpdate.show('{version}');\
+             return c?'click':'idle';}})()"
+        );
+
+        let app_for_click = app.clone();
+        let _ = main.as_ref().eval_with_callback(js, move |value| {
+            if value.contains("click") {
+                let handle = app_for_click.clone();
+                std::thread::spawn(move || prompt_update(handle));
+            }
+        });
     });
 }
 
@@ -731,11 +839,17 @@ fn bump_version(version: &str) -> String {
     format!("{}.{}.{}", parts[0], parts[1], parts[2])
 }
 
-fn prompt_update(app: AppHandle, latest: String, installed: String) {
-    {
+/// 点击侧栏角标时弹出的确认卡片
+fn prompt_update(app: AppHandle) {
+    let pending = {
         let state = app.state::<AppState>();
-        *state.pending_update.lock().unwrap() = Some((latest.clone(), installed.clone()));
-    }
+        let value = state.pending_update.lock().unwrap().clone();
+        value
+    };
+
+    let Some((latest, installed)) = pending else {
+        return;
+    };
 
     show_toast(
         &app,
@@ -793,6 +907,7 @@ fn run_update(app: AppHandle, latest: String, previous: String) {
     }
 
     // 服务已经停了，直接重启，避免停在一个不可用的界面
+    eval_main(&app, "window.__dshUpdate && window.__dshUpdate.hide()");
     show_toast(
         &app,
         ToastPayload {
@@ -931,10 +1046,6 @@ fn dsh_open_log(app: AppHandle) {
     }
 }
 
-#[tauri::command]
-fn dsh_quit(app: AppHandle) {
-    app.exit(0);
-}
 
 #[tauri::command]
 fn dsh_toast_current(app: AppHandle) -> Option<ToastPayload> {

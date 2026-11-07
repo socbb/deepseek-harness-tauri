@@ -1,6 +1,9 @@
 {
   "identifier": "default",
-  "description": "启动页与左下角浮层需要的核心能力：事件监听、调用自定义命令",
+  "description": "启动页、左下角浮层、dsh 页面（角标）需要的核心能力",
   "windows": ["splash", "main", "toast"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://127.0.0.1:*/*", "http://localhost:*", "http://localhost:*/*"]
+  },
   "permissions": ["core:default"]
 }
