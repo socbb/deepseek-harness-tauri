@@ -1,0 +1,22 @@
+Cargo.toml
+  h_b7c601a3781e0c 1-15
+README.md
+  h_b7c601a3781e0c 3-5,11-14,16,52-53,58,65-69,75-76,81-82
+main.rs
+  h_b7c601a3781e0c 1-893
+src-tauri/Cargo.toml
+  h_b7c601a3781e0c 13
+src-tauri/src/main.rs
+  h_b7c601a3781e0c 18,72,142-144,148-152,154-164,171,175-179,198-199,267,320,403,417,428,549-683,770-787,790-814,816-850,883-884,888-889
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a8d0cb6c77b9d1399ee87c4990d04f4307d007fe",
+  "prompts": {},
+  "humans": {
+    "h_b7c601a3781e0c": {
+      "author": "陈波波 <socbb@uap.local>"
+    }
+  }
+}
