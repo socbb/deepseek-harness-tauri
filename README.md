@@ -55,7 +55,7 @@ ui/
 | 开窗 | 地址就绪后建隐藏窗口，1.4 秒后显示并关掉启动页（启动页置顶盖住白屏） |
 | 收尾 | `RunEvent::Exit` → `taskkill /pid /T /F`，连 npm 安装进程一起收 |
 
-数据目录：`%APPDATA%\DeepSeek Harness\`（`runtime\`、`logs\desktop.log`）。
+数据目录：`%APPDATA%\com.deepseek.harness.desktop\`（`runtime\` 放运行时，`logs\desktop.log` 是日志）。
 
 ## 已经验证过的
 
