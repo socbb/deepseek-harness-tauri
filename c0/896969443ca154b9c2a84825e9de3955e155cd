@@ -1,0 +1,22 @@
+README.md
+  h_b7c601a3781e0c 7,28,30-34,38-48,50-134,136-137,145-146,150,171
+src-tauri/Cargo.toml
+  h_b7c601a3781e0c 15-21
+src-tauri/src/main.rs
+  h_b7c601a3781e0c 1043-1047,1152-1166,1170-1171,1177-1215,1218,1224,1234-1236,1238-1240
+src-tauri/tauri.conf.json
+  h_b7c601a3781e0c 33-35,45-47
+src-tauri/tauri.macos.conf.json
+  h_b7c601a3781e0c 1-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c0896969443ca154b9c2a84825e9de3955e155cd",
+  "prompts": {},
+  "humans": {
+    "h_b7c601a3781e0c": {
+      "author": "陈波波 <socbb@uap.local>"
+    }
+  }
+}
