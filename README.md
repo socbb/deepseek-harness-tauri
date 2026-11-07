@@ -1,44 +1,38 @@
-# DeepSeek Harness Desktop（Tauri 2）
+# DeepSeek Harness Desktop
 
-Electron 版的 Tauri 重写：把 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）的 Web UI 装进原生窗口，
-**每次启动检查 npm 最新版本，有更新就先装再开**。
+把 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）的 Web UI 装进原生窗口，
+**每次启动检查 npm 上的最新版本，有更新就先装再开**。
 
-> 当前状态：源码完整，**未在本机编译过**（这台机器没有 Rust 与 MSVC）。下文「完成编译」两步做完即可 `pnpm/npm run build`。
+> 选型说明：Electron 打出来的包太大（300 MB 起），所以用 Tauri 2——复用系统 WebView2，产物只有十几 MB。
 
-## 为什么换 Tauri
+## 启动流程
 
-| 维度 | Electron 版 | 本版（Tauri 2） |
-| --- | --- | --- |
-| 产物体积 | 358 MB（单 exe 250 MB） | 预计 8–15 MB，复用系统 WebView2 |
-| 内存 | 每个窗口一套 Chromium | 共享系统 WebView2 |
-| 前置依赖 | Node.js | Node.js + 编译期 Rust/MSVC；运行时只要 WebView2（Win10 1803+ 一般自带） |
+1. 查 registry 上 `@deepseek-ai/dsh` 的 `latest`
+2. 和本地运行时比对，有新版本就 `npm install`（无更新直接跳过）
+3. 启动 `dsh web --no-open --port 0`
+4. 从 stdout 解析带 token 的本地地址，加载进 WebView2
 
-## 完成编译（一次性）
+界面资源来自当次安装的运行时，所以壳不用重装，内容永远是新版。
 
-1. 装 Rust（不需要管理员）：
+## 环境要求
 
-```bash
-# 下载并运行 rustup-init，一路默认即可
-# https://win.rustup.rs/x86_64
-```
-
-2. 装 VS Build Tools（**需要管理员**），勾选「使用 C++ 的桌面开发」：
-
-```bash
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-# 不给力就直接下：https://aka.ms/vs/17/release/vs_BuildTools.exe
-```
-
-3. 验证并打包：
+| 依赖 | 用途 |
+| --- | --- |
+| Node.js + npm | 安装、启动 dsh |
+| Rust（stable-msvc） | 编译本应用 |
+| VS Build Tools | C++ 桌面开发工作负载 + Windows SDK（链接必需） |
+| WebView2 运行时 | Win10 1803+ 一般自带 |
 
 ```bash
+# 装完工具链后自查，三项都应是 ✔
+npx tauri info
+
 npm install
-npx tauri info     # 三项都应是 ✔（WebView2 / MSVC / rustc）
-npm run dev        # 开发运行
-npm run build      # 产物：src-tauri/target/release/bundle/nsis/*.exe
+npm run dev      # 开发运行
+npm run build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
 ```
 
-## 代码结构
+## 目录结构
 
 ```
 src-tauri/
@@ -50,43 +44,40 @@ ui/
   index.html               frontendDist 占位首页
 ```
 
-关键实现（和 Electron 版一一对应）：
+## 实现要点
 
 | 环节 | 做法 |
 | --- | --- |
 | 查最新版 | `npm view @deepseek-ai/dsh dist-tags.latest --json`，复用用户 `.npmrc` 里的 registry |
-| 安装 | 写 `runtime/package.json` 后 `npm install`（cwd = runtime 目录），stdout/stderr 直接重定向进日志 |
+| 安装 | 写 `runtime/package.json` 后 `npm install`（cwd = runtime 目录），输出重定向进日志 |
 | 启动服务 | `node <bin> web --no-open --port 0`，`CREATE_NO_WINDOW` 避免弹黑框 |
 | 取地址 | 逐行读 stdout，抓 `http://127.0.0.1:PORT/?token=…`；**不带 token 会 401** |
-| 开户 | 地址就绪后 `WebviewWindowBuilder` 建隐藏窗口，1.4s 后显示并关掉启动页（启动页置顶盖住白屏） |
+| 开窗 | 地址就绪后建隐藏窗口，1.4 秒后显示并关掉启动页（启动页置顶盖住白屏） |
 | 收尾 | `RunEvent::Exit` → `taskkill /pid /T /F`，连 npm 安装进程一起收 |
 
 数据目录：`%APPDATA%\DeepSeek Harness\`（`runtime\`、`logs\desktop.log`）。
 
-## 与 Electron 版的差距
+## 已经验证过的
 
-- 没有菜单栏（Electron 版有「检查并更新 / 重启服务 / 在浏览器打开」）——需要的话加 `tauri::menu`
-- 没有窗口位置记忆（加 `tauri-plugin-window-state` 即可）
-- 没有单实例锁（加 `tauri-plugin-single-instance`）
-- 也没有壳自更新（和 Electron 版一样受限于没有发布服务器；有服务器就接 `tauri-plugin-updater`，需要签名密钥）
-
-## 已做的校验
-
-- `rustc --emit=metadata` 通过：**没有语法错误**（缺的只是未链接的 crate）
-- `npx tauri info` 能正确读取 `tauri.conf.json`（App / CSP / bundle 均识别）
+- `rustc --emit=metadata` 通过：没有语法错误
+- `npx tauri info` 能正确读取 `tauri.conf.json`
 - 关键 API 已比对 docs.rs 2.12 签名：`tauri::Url`、`AppHandle::run_on_main_thread`、`WebviewWindowBuilder::{new, inner_size, min_inner_size, visible, build}`
-- 启动页在 Chromium 里渲染通过（正常态 / 安装态 / 错误态三张截图在 `shots/`）
+- 启动页在 Chromium 内核里渲染通过（`shots/` 里三张截图：正常态 / 安装态 / 错误态）
 
-## 未验证项（编译后请先跑这几条）
+## 还需要实测
 
-1. **透明窗口**：Windows 上 WebView2 的透明窗口偶尔出黑边。若出现，把 `tauri.conf.json` 里启动页的 `transparent` 改 `false`、加 `"backgroundColor": "#ffffff"`。
-2. **WebView2 兼容性**：dsh 前端在 WebView2 里是否完全一致（`window.open`、下载、剪贴板读）。`/api` 的 browser-trust fence 会校验 `Origin`/`Sec-Fetch-*`，WebView2 正常发送，理论上没问题。
-3. **建窗口时机**：主窗口在后台线程用 `WebviewWindowBuilder` 创建（官方示例支持）；Windows 上不要在同步命令/事件回调里建窗口，会死锁。
-4. **首帧**：靠「启动页置顶 1.4s」遮住加载过程，如果机器慢可能露出半截白屏；可把 `SPLASH_SETTLE_MS` 调大。
+1. **透明窗口**：WebView2 的透明窗口偶尔出黑边。若出现，把 `tauri.conf.json` 里启动页的 `transparent` 改 `false`、加 `"backgroundColor": "#ffffff"`
+2. **前端兼容性**：`window.open`、下载、剪贴板读在 WebView2 里的表现
+3. **建窗口时机**：主窗口在后台线程创建（官方示例支持）；Windows 上不要在同步命令/事件回调里建窗口，会死锁
+4. **首帧**：靠「启动页置顶 1.4 秒」遮住加载过程，机器慢时可能露出半截白屏，可调大 `SPLASH_SETTLE_MS`
 
-## 调试技巧
+## 调试
 
-- 启动页可以脱离 Tauri 直接看：浏览器打开 `ui/splash.html`，会走一遍演示状态，`重试` 按钮演示错误态
+- 启动页可脱离 Tauri 直接看：浏览器打开 `ui/splash.html`，会走一遍演示状态
 - 日志：`%APPDATA%\DeepSeek Harness\logs\desktop.log`
-- 跳过更新：设 `DSH_SKIP_UPDATE=1`，直接用已装版本启动（调试用）
-- 指定运行时/工作区：`DSH_RUNTIME_DIR`、`DSH_WORKSPACE`（和 Electron 版一致，可复用已经装好的 runtime，省一次 2 分钟的下载）
+- 跳过更新：`DSH_SKIP_UPDATE=1`，直接用已装版本启动
+- 指定运行时/工作区：`DSH_RUNTIME_DIR`、`DSH_WORKSPACE`
+
+## 后续可补
+
+菜单栏（检查更新 / 重启服务）、窗口位置记忆、单实例锁、壳自更新（`tauri-plugin-updater`，需要签名密钥和发布服务器）。
